@@ -1,0 +1,806 @@
+#!/usr/bin/env python
+#
+# Copyright (c) STMicroelectronics 2012
+#
+# This file is part of bcache.
+#
+# bcache is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License v2.0
+# as published by the Free Software Foundation
+#
+# bcache is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# v2.0 along with bcache. If not, see <http://www.gnu.org/licenses/>.
+#
+#
+# Usage: get usage with bcache -h
+#
+
+from __future__ import print_function
+import sys
+
+# Fail early if python version is not supported
+def check_python_version():
+    try:
+        assert sys.hexversion >= 0x02060000
+    except:  # pragma: no cover
+        sys.stderr.write('bcache: error: python version >= 2.6 is required\n')
+        sys.exit(1)
+check_python_version()
+
+# Setup reasonably quiet mode on ^C
+import signal
+def interrupt_handler(signum, frame):
+    """ Handler for signals that require immediate exit. """
+    sys.stderr.write("bcache: interrupted by signal %d\n" % signum)
+    sys.exit(128 + signum)
+signal.signal(signal.SIGINT, interrupt_handler)
+
+import os, subprocess, select, fcntl, errno, optparse, time, hashlib, logging, tempfile, yaml, stat, shutil
+
+# Update VERSION for major.minor.patch releases.
+# The sha1sum will be appended to the version string.
+VERSION="0.1.0"
+
+class ExitCodes:
+    """ Exit codes used to feedback the parent process.
+    This codes are aligned with the coreutils timeout implementation.
+    """
+    USER = 2  # user error
+    TIMEDOUT = 124  # semaphore timed out
+    CANCELED = 125  # internal error
+    CANNOT_INVOKE = 126  # error executing job
+    ENOENT = 127  # couldn't find job to exec
+
+
+class LocalOptionParser(optparse.OptionParser):
+    """
+    Overrides OptionParser.
+    Exits with the correct code on error.
+    Overrides version output.
+    """
+    def __init__(self):
+        optparse.OptionParser.__init__(
+            self, prog="bcache",
+            description="bcache utility, "
+            "run a command or get outputs from cache.",
+            usage="%prog [options] -- COMMAND..."
+        )
+        self.disable_interspersed_args()
+
+    def parse_args(self):
+        opts, args = optparse.OptionParser.parse_args(self)
+        return self.process_args(opts, args)
+
+    @staticmethod
+    def handle_version(option, opt, value, parser):
+        with open(__file__, "rb") as f:
+            sha1 = hashlib.sha1(f.read()).hexdigest()
+        print("%s version %s [sha1:%s]" % (parser.prog, VERSION, sha1))
+        parser.exit(0)
+
+    def process_args(self, opts, args):
+        """
+        Process parsed args into suitable form after some checks.
+        Return a single namespace with all arguments.
+        """
+        if opts.force and opts.no_store:
+            # If -n and -f are specified, do not use cache at all
+            opts.cache_dir = None
+        elif not opts.cache_dir:
+            home = os.environ.get('HOME', None)
+            if home:
+                opts.cache_dir = os.path.join(home, ".bcache")
+            else:
+                self.exit(1, "%s: error: $HOME undefined, please specify a cache-dir argument (--cache-dir CACHE_DIR)\n" % self.prog)
+
+        if not opts.yaml and not opts.shell:
+            if len(args) < 1:
+                self.exit(1, "%s: error: missing command\n" % self.prog)
+            opts.command_args = args
+        else:
+            if len(args) > 0:
+                self.exit(1, "%s: error: too many arguments\n" % self.prog)
+
+        return opts
+
+    def exit(self, status=0, message=None):
+        """ Always exit with status USER on argument error. """
+        if status != 0:
+            status = ExitCodes.USER
+        optparse.OptionParser.exit(self, status, message)
+
+
+parser = LocalOptionParser()
+
+parser.add_option("-c", "--cache-dir",
+                  help="cache dir for command outputs (default: $HOME/.bcache)")
+parser.add_option("-o", "--output",
+                  help="output file/directory to be cached, may be multiple",
+                  action="append", default=[])
+parser.add_option("-i", "--input",
+                  help="optional file/directory input, may be multiple",
+                  action="append", default=[])
+parser.add_option("-s", "--shell",
+                  help="shell command line to execute, may be multiple",
+                  action="append", default=[])
+parser.add_option("-e", "--env",
+                  help="env var to add as KEY=VALUE, may be multiple. Use '-' to reset",
+                  action="append", default=[])
+parser.add_option("-v", "--venv",
+                  help="volatile env var to add as KEY, may be multiple. Use '-' to reset",
+                  action="append", default=[])
+parser.add_option("-w", "--cwd",
+                  help="initial working dir for executed commands. Default: '.'")
+parser.add_option("--id",
+                  help="optional identifier for unique cache entry, may be multiple",
+                  action="append", default=[])
+parser.add_option("--chain",
+                  help="optional identification file for reading/writing image ids")
+parser.add_option("-f", "--force",
+                  help="force re-execution without reading cache",
+                  action="store_true")
+parser.add_option("-n", "--no-store",
+                  help="do not store to cache",
+                  action="store_true")
+parser.add_option("-y", "--yaml",
+                  help="input build yaml description")
+parser.add_option("--dump",
+                  help="outputs yaml description to stdout and exit",
+                  action="store_true")
+parser.add_option("--clean",
+                  help="clean cache entry for the command if any",
+                  action="store_true")
+parser.add_option("--dump-id",
+                  help="outputs cache identity to stdout and exit",
+                  action="store_true")
+parser.add_option("--version",
+                  help="output version string",
+                  action="callback",
+                  callback=parser.handle_version)
+parser.add_option("-d", "--debug",
+                  help="debug mode",
+                  action="store_true")
+parser.add_option("--log-file",
+                  default="&stderr",
+                  help="log file, &stderr if not specified")
+
+def mkdir_p(path, mode=None):
+    try:
+        os.makedirs(path)
+    except OSError as exc:
+        if exc.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else: raise
+    if mode: os.chmod(path, mode)
+
+def clean_force(dst):
+    """ Force cleaning of a file or dir (recursive). """
+    """ TODO: move to trash first in case of busy entries. """
+    """ TODO: handle specific case of ".". """
+    if dst != ".":
+        if os.path.exists(dst):
+            subprocess.call(['chmod', '-R', '--', 'u+rwX', dst])
+            subprocess.call(['rm', '-rf', '--', dst])
+    else:
+        print("WARNING: bcache: removal of . not implemented", file=sys.stderr)
+    return 0
+
+def copy_has_reflink():
+    """ Returns True if copy supports --reflink arg. """
+    code = 1
+    tmpdir = tempfile.mkdtemp()
+    try:
+        src = os.path.join(tmpdir, 'srcf')
+        dst = os.path.join(tmpdir, 'dstf')
+        trash = os.path.join(tmpdir, 'out')
+        subprocess.call(['touch', src])
+        with open(trash, "w") as f:
+            code = subprocess.call(['cp', '-a', '--reflink=auto', '--', src, dst],
+                                   stdout=f, stderr=subprocess.STDOUT)
+    finally:
+        clean_force(tmpdir)
+    return True if code == 0 else False
+
+def copy_clone_force(src, dst):
+    """ Make a recursive clone of the file or directory. """
+    if os.path.exists(dst):
+        return 1
+    if not os.path.exists(src):
+        return 1
+    subprocess.call(['chmod', '-R', '--', 'u+rX', src])
+    if os.path.dirname(dst) != "": mkdir_p(os.path.dirname(dst))
+    if copy_has_reflink():
+        code = subprocess.call(['cp', '-a', '--reflink=auto', '--', src, dst])
+    else:
+        code = subprocess.call(['cp', '-a', '--', src, dst])
+    return code
+
+def clone_list(clone_list):
+    """ Clone the list of pairs [src, dst]. """
+    code = 0
+    for _, dst in clone_list:
+        code = clean_force(dst)
+        if code != 0: return code
+    for src, dst in clone_list:
+        code = copy_clone_force(src, dst)
+        if code != 0: break
+    if code != 0:
+        for _, dst in clone_list:
+            clean_force(dst)
+    return code
+
+def clone_list_to(srcs, dst_root):
+    """ Clone the files or directory in the srcs list into dst_root. """
+    """ dst_root is created if it does not exist. """
+    code = 0
+    clones = []
+    for src in srcs:
+        assert(src is not None and src != "" and src[0] != "/" and src != "." and src != "..")
+        clones.append([src, os.path.join(dst_root, src)])
+    return clone_list(clones)
+
+def clone_list_from(src_root, dsts):
+    """ Clone the files or directory listed in dsts from the dst_root dir to the current dir. """
+    code = 0
+    clones = []
+    for dst in dsts:
+        assert(dst is not None and dst != "" and dst[0] != "/" and dst != ".." and dst != ".")
+        clones.append([os.path.join(src_root, dst), dst])
+    return clone_list(clones)
+
+class Lock:
+    """ Cross process lock. Note that this works on NFS with lockd support. """
+    def __init__(self, filename, logger=None):
+        self.filename = filename
+        self.logger = logger
+        self.handle = None
+        if self.logger: self.logger.debug("creating lock %s..." % self.filename)
+        mkdir_p(os.path.dirname(filename))
+        self.handle = open(filename, "wb")
+
+    def acquire(self):
+        if self.logger: self.logger.debug("acquiring lock %s..." % self.filename)
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+
+    def release(self):
+        if self.logger: self.logger.debug("releasing lock %s." % self.filename)
+        fcntl.flock(self.handle, fcntl.LOCK_UN)
+
+    def __del__(self):
+        if self.handle: self.handle.close()
+
+class CommandsContext():
+    """ Maintains environment information for the command and """
+    """ executes commands when requested. """
+    def __init__(self, logger=None):
+        self.logger = logger
+        self.shell = [ "/usr/bin/env", "bash" ]
+        self.encoding = "utf-8"
+        self.env = []
+        self.venv = []
+        self.cwd = "."
+        self.cmds = []
+        self.ids = []
+        self.inputs = []
+        self.outputs = []
+
+    def to_unicode(self, input):
+        if not isinstance(input, unicode):
+            return input.decode(self.encoding)
+        else:
+            return input
+
+    def to_str(self, input):
+        if isinstance(input, unicode):
+            return input.encode(self.encoding)
+        else:
+            return input
+        
+    def strdump(self):
+        actual = {}
+        actual['cmds'] = self.cmds
+        actual['env'] = self.env
+        actual['venv'] = self.venv
+        actual['cwd'] = self.cwd
+        actual['ids'] = self.ids
+        actual['inputs'] = self.inputs
+        actual['outputs'] = self.outputs
+        yaml_repr = yaml.safe_dump(actual)
+        assert(isinstance(yaml_repr, str))
+        return yaml_repr
+
+    def strload(self, input):
+        self.to_str(input)
+        assert(isinstance(input, str))
+        yaml_repr = yaml.load(input)
+        self.cwd = yaml_repr.get('cwd', ".")
+        self.env = yaml_repr.get('env', [])
+        self.venv = yaml_repr.get('venv', [])
+        self.cmds = yaml_repr.get('cmds', [])
+        self.ids = yaml_repr.get('ids', [])
+        self.inputs = yaml_repr.get('inputs', [])
+        self.outputs = yaml_repr.get('outputs', [])
+        return self
+
+    def load(self, fh=None):
+        if fh is None: fh = sys.stdin
+        self.strload(fh.read())
+        return self
+
+    def loadfn(self, fname):
+        try:
+            with open(fname, "r") as f:
+                self.load(f)
+        except IOError as e:
+            self.logger.error("failed to read input file: %s: %s" %
+                              (fname, e.strerror))
+            raise
+        return self
+
+    def dump(self, fh=None):
+        if fh is None: fh = sys.stdout
+        fh.write(self.strdump())
+        fh.flush()
+
+    def dump_id(self, fh=None):
+        if fh is None: fh = sys.stdout
+        fh.write("%s\n" % self.get_hash_id())
+        fh.flush()
+
+    def get_hash_id(self):
+        sha1 = hashlib.sha1(self.strdump()).hexdigest()
+        return sha1
+
+    def get_hash(self, fname):
+        with open(fname, "rb") as f:
+            sha1 = hashlib.sha1(f.read()).hexdigest()
+        return sha1
+
+    def add_inputs(self, inputs):
+        for input in inputs:
+            try:
+                self.inputs.append([input, self.get_hash(input)])
+            except IOError as e:
+                self.logger.error("failed to read input file: %s: %s" %
+                                  (input, e.strerror))
+                raise
+        return self
+
+    def add_ids(self, ids):
+        self.ids.extend(ids)
+        return self
+
+    def add_outputs(self, outputs):
+        self.outputs.extend(outputs)
+        return self
+
+    def set_env(self, key_value):
+        key_value = self.to_str(key_value)
+        assert(isinstance(key_value, str))
+        if key_value == "-":
+            self.env = []
+        else:
+            pair = key_value.split("=", 1)
+            key = pair[0]
+            if len(pair) == 2: value = pair[1]
+            else: value = ""
+            new_env = self.env[:]
+            for env in self.env:
+                old = env.split("=", 1)[0]
+                if old != key:
+                    new_env.append(env)
+            new_env.append("%s=%s" % (key, value))
+            self.env = sorted(new_env)
+        return self
+
+    def set_envs(self, envs):
+        for env in envs:
+            self.set_env(env)
+        return self
+
+    def set_venv(self, key):
+        key = self.to_str(key)
+        assert(isinstance(key, str))
+        if key == "-":
+            self.venv = []
+        else:
+            if not key in self.venv:
+                self.venv.append(key)
+            self.venv = sorted(self.venv)
+        return self
+
+    def set_venvs(self, venvs):
+        for venv in venvs:
+            self.set_venv(venv)
+        return self
+
+    def set_cwd(self, cwd):
+        if cwd is None: cwd = "."
+        cwd = self.to_str(cwd)
+        assert(isinstance(cwd, str))
+        self.cwd = cwd
+        return self
+
+    def add_command(self, command):
+        assert(isinstance(command, list))
+        self.cmds.append(command)
+        return self
+
+    def add_shell_command(self, command):
+        command = self.to_str(command)
+        assert(isinstance(command, str))
+        self.cmds.append(command)
+        return self
+
+    def add_commands(self, commands):
+        assert(isinstance(commands, list))
+        for command in commands:
+            if isinstance(command, list):
+                self.add_command(command)
+            else:
+                self.add_shell_command(command)
+        return self
+
+    def get_ids(self):
+        return self.ids
+
+    def get_outputs(self):
+        return self.outputs
+
+    def actual_env(self):
+        command_env = dict(map(lambda x: x.split("=", 1), self.env))
+        for key in self.venv:
+            value =  os.environ.get(key, None)
+            if not value is None:
+                command_env[key] = value
+            else:
+                if key in command_env:
+                    del(command_env[key])
+        return command_env
+
+    def read_id_file(self, fname):
+        try:
+            with open(fname, "rb") as f:
+                for line in f.readlines():
+                    self.ids.append(line.rstrip('\n'))
+        except IOError as e:
+            if e.errno != errno.ENOENT:
+                self.logger.error("failed to read id file: %s: %s" %
+                                  (fname, e.strerror))
+                raise
+        return self
+
+    def write_id_file(self, fname):
+        try:
+            with open(fname, "ab") as f:
+                f.write("%s\n" % self.get_hash_id())
+        except IOError as e:
+            self.logger.error("failed to write id file: %s" %
+                                  (fname, e.strerror))
+            raise
+        
+    @staticmethod
+    def get_code_from(fname):
+        try:
+            with open(fname, "rb") as f:
+                data = f.read()
+            code = int(data)
+        except:
+            return ExitCodes.CANCELED
+        return code
+
+    @staticmethod
+    def dump_log_from(fname):
+        stdout = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
+        stderr = os.fdopen(os.dup(sys.stderr.fileno()), "wb")
+        try:
+            with open(fname, "rb") as f:
+                while True:
+                    data = f.read(8)
+                    if not data: break
+                    fd = int(data[:2], base=16)
+                    size = int(data[3:7], base=16)
+                    data = f.read(size)
+                    if fd == 1:
+                        stdout.write(data)
+                        stdout.flush()
+                    else:
+                        stderr.write(data)
+                        stderr.flush()
+        except:
+            return 1
+        finally:
+            stdout.close()
+            stderr.close()
+        return 0
+
+    def execute(self, logfile=None, codfile=None, ymlfile=None):
+
+        def setfl(fd, msk):
+            if not msk: return
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | msk)
+
+        work_dir = os.getcwd()
+        code = 0
+        shell_env = self.actual_env()
+        if self.logger:
+            self.logger.debug("Building image: %s" % self.get_hash_id())
+            self.logger.debug(" dir: %s" % work_dir)
+            self.logger.debug(" cwd: %s" % self.cwd)
+            self.logger.debug(" env: %s" % (" ".join(self.env)))
+            self.logger.debug(" venv: %s" % (" ".join(self.venv)))
+            self.logger.debug(" ids: %s" % (" ".join(self.ids)))
+            self.logger.debug(" outputs: %s" % (" ".join(self.outputs)))
+
+        for command in self.cmds:
+            if not isinstance(command, list):
+                command = self.shell + [ "-c", command ]
+            if self.logger:
+                self.logger.debug(" executing: %s" % command)
+            stdout = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
+            stderr = os.fdopen(os.dup(sys.stderr.fileno()), "wb")
+            devnull = open(os.devnull, "rb");
+            try:
+                proc = subprocess.Popen(command,
+                                        cwd=os.path.join(work_dir, self.cwd),
+                                        env=shell_env,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        stdin=devnull)
+                fds_in = []
+                # set flags to get non-blocking read of stdio/stderr
+                setfl(proc.stdout, msk=os.O_NONBLOCK)
+                fds_in.append(proc.stdout)
+                setfl(proc.stderr, msk=os.O_NONBLOCK)
+                fds_in.append(proc.stderr)
+                while fds_in:
+                    ready = select.select(fds_in, [], [])[0]
+                    for fd in ready:
+                        data = fd.read()
+                        if data:
+                            if fd == proc.stdout:
+                                stdout.write(data)
+                                stdout.flush()
+                                if logfile:
+                                    assert(len(data) <= 65535)
+                                    logfile.write("01:%.4x:%s" % (len(data), data))
+                                    logfile.flush()
+                            else:
+                                stderr.write(data)
+                                stderr.flush()
+                                if logfile:
+                                    assert(len(data) <= 65535)
+                                    logfile.write("02:%.4x:%s" % (len(data), data))
+                                    logfile.flush()
+                        else:
+                            fds_in.remove(fd)
+                code = proc.wait()
+            except OSError as e:
+                self.logger.error("failed to execute %s: %s" %
+                                  (command[0], e.strerror))
+                code = ExitCodes.ENOENT
+            finally:
+                stdout.close()
+                stderr.close()
+                devnull.close()
+            if code != 0:
+                if self.logger:
+                    self.logger.debug(" command returned error code: %d" % code)
+                break
+        if ymlfile:
+            self.dump(ymlfile)
+            ymlfile.flush()
+        if codfile:
+            codfile.write("%d" % code)
+            codfile.flush()
+        return code
+
+    
+    @staticmethod
+    def _test():
+        logging.basicConfig(level = logging.DEBUG)
+        ctx = CommandsContext(logger=logging.getLogger())
+        assert(ctx is not None)
+        ctx.set_venv("USER")
+        ctx.set_venv("LOGIN")
+        ctx.set_env("DUMMY", "=\"\' ;:.\xc3\xa9".decode("utf-8"))
+        ctx.add_shell_command("env")
+        ctx.add_command(["env"])
+        ctx.add_shell_command("ls")
+        code = ctx.execute()
+        assert(code == 0)
+        ctx.dump()
+        print(ctx.get_hash_id())
+        with open("dump.yml", "w") as fh:
+            ctx.dump(fh)
+        ctx2 = CommandsContext(logger=logging.getLogger())
+        ctx2.strload(ctx.strdump())
+        print(ctx2.get_hash_id())
+        ctx2 = CommandsContext(logger=logging.getLogger())
+        with open("dump.yml") as fh:
+            ctx2.load(fh)
+        print(ctx2.get_hash_id())
+
+
+class Monitor():
+    """ Actual class containing the run method for the tool. """
+    def __init__(self, args):
+        """ Constructor, arguments are stored into the args object. """
+        self.args = args
+
+    def run(self):
+
+        # Setup logger
+        log_fmt = "%(levelname)s: %(name)s: %(process)d: %(message)s"
+        log_lvl = logging.DEBUG if args.debug else logging.INFO
+        if self.args.log_file == "&stderr":
+            log_stream = sys.stderr
+        elif self.args.log_file == "&stdout":
+            log_stream = sys.stdout
+        else:
+            try:
+                log_stream = open(args.log_file, "a", 1)
+            except IOError as e:
+                print("bcache: error:: can't open log file: %s" % str(e),
+                      file=sys.stderr)
+                return ExitCodes.USER
+        logging.basicConfig(stream = log_stream, level = log_lvl,
+                            format = log_fmt)
+        logger = logging.getLogger("bcache")
+
+        ctx = CommandsContext(logger=logger)
+        try:
+            if args.chain: ctx.read_id_file(args.chain)
+            if args.yaml is not None:
+                ctx.loadfn(args.yaml)
+            elif args.shell:
+                ctx.add_ids(
+                    self.args.id).add_inputs(
+                        self.args.input).add_outputs(
+                            self.args.output).set_envs(
+                                self.args.env).set_venvs(
+                                    self.args.venv).set_cwd(
+                                        self.args.cwd).add_commands(self.args.shell)
+            else:
+                ctx.add_ids(
+                    self.args.id).add_inputs(
+                        self.args.input).add_outputs(
+                            self.args.output).set_envs(
+                                self.args.env).set_venvs(
+                                    self.args.venv).set_cwd(
+                                        self.args.cwd).add_command(
+                                            self.args.command_args)
+        except IOError as e:
+            # Error messages for IOError was output by ctx methods
+            return ExitCodes.USER
+
+        image_id = ctx.get_hash_id()
+
+        # If dump/dump_id, dumps description/id and exit
+        if args.dump:
+            ctx.dump()
+            return 0
+        elif args.dump_id:
+            ctx.dump_id()
+            return 0
+
+        cache_root = self.args.cache_dir
+
+        # If no cache management, execute command directly
+        if not cache_root:
+            code = ctx.execute()
+            if code == 0 and args.chain:
+                try:
+                    ctx.write_id_file(args.chain)
+                except IOError as e:
+                    return ExitCodes.USER
+            return code
+
+        # Create cache dir if non existent and set user only permission
+        try:
+            logger.debug("creating cache root dir '%s'" % cache_root)
+            mkdir_p(cache_root, mode=stat.S_IRWXU)
+        except OSError as e:
+            print("bcache: error:: can't create cache root dir '%s': %s" %
+                  (cache_root, e.strerror),
+                  file=sys.stderr)
+            return ExitCodes.USER
+
+        # Take global lock, for creating new lock entry
+        global_lock_file = os.path.join(cache_root, "lock")
+        global_lock = Lock(global_lock_file, logger=logger)
+        try:
+            global_lock.acquire()
+            cache_dir_id = os.path.join(cache_root, image_id[:2], image_id[2:])
+            try:
+                logger.debug("creating cache dir '%s'" % cache_dir_id)
+                mkdir_p(cache_dir_id, mode=stat.S_IRWXU)
+            except OSError as e:
+                print("bcache: error:: can't create cache dir '%s': %s" %
+                      (cache_dir_id, e.strerror),
+                      file=sys.stderr)
+                return ExitCodes.USER
+            lock_file = os.path.join(cache_dir_id, "lock")
+            lock = Lock(lock_file, logger=logger)
+        finally:
+            global_lock.release()
+
+        # Take lock and execute command
+        bcache_yml = os.path.join(cache_dir_id, "bcache.yml")
+        bcache_log = os.path.join(cache_dir_id, "bcache.log")
+        bcache_cod = os.path.join(cache_dir_id, "bcache.cod")
+        cache_output_dir = os.path.join(cache_dir_id, "output")
+        outputs = ctx.get_outputs()
+        tmpdir = None
+        try:
+            lock.acquire()
+            if args.clean:
+                logger.debug("cleaning cache entry %s..." % cache_dir_id)
+                clean_force(cache_output_dir)
+                clean_force(bcache_yml)
+                clean_force(bcache_log)
+                clean_force(bcache_cod)
+                return 0
+            if not args.force and CommandsContext.get_code_from(bcache_cod) == 0:
+                logger.debug("reading from cache %s..." % cache_dir_id)
+                if len(outputs) > 0:
+                    if clone_list_from(cache_output_dir, outputs) != 0:
+                        print("bcache: error: failed to clone outputs (%s) from %s" %
+                              (" ".join(outputs), cache_output_dir),
+                              file=sys.stderr)
+                        return ExitCodes.CANCELED
+                if CommandsContext.dump_log_from(bcache_log) != 0:
+                    print("bcache: error: could not dump log file from %s" %
+                          (bcache_log),
+                          file=sys.stderr)
+                    return ExitCodes.CANCELED
+                code = CommandsContext.get_code_from(bcache_cod)
+                if args.chain:
+                    try:
+                        ctx.write_id_file(args.chain)
+                    except IOError as e:
+                        return ExitCodes.USER
+            else:
+                tmpdir = tempfile.mkdtemp(dir=cache_dir_id)
+                with open(os.path.join(tmpdir, "bcache.log"), "wb") as logfile:
+                    with open(os.path.join(tmpdir, "bcache.yml"), "wb") as ymlfile:
+                        with open(os.path.join(tmpdir, "bcache.cod"), "wb") as codfile:
+                            code = ctx.execute(logfile=logfile, codfile=codfile, ymlfile=ymlfile)
+                if code == 0 and not args.no_store:
+                    logger.debug("updating cache %s..." % cache_dir_id)
+                    if len(outputs) > 0:
+                        if len(filter(lambda x: not os.path.exists(x), outputs)) > 0:
+                            print("bcache: error: missing outputs in: %s" % " ".join(outputs),
+                                  file=sys.stderr)
+                            return ExitCodes.CANCELED
+                        if clone_list_to(outputs, cache_output_dir) != 0:
+                            print("bcache: error: failed to clone outputs (%s) to %s" %
+                                  (" ".join(outputs), cache_output_dir),
+                                  file=sys.stderr)
+                            return ExitCodes.CANCELED
+                    if clone_list([(os.path.join(tmpdir, "bcache.log"), bcache_log),
+                                   (os.path.join(tmpdir, "bcache.yml"), bcache_yml),
+                                   (os.path.join(tmpdir, "bcache.cod"), bcache_cod)]) != 0:
+                        print("bcache: error: failed to move bcache files to %s" %
+                              (cache_dir_id),
+                              file=sys.stderr)
+                        return ExitCodes.CANCELED
+                if code == 0 and args.chain:
+                    try:
+                        ctx.write_id_file(args.chain)
+                    except IOError as e:
+                        return ExitCodes.USER
+        finally:
+            if tmpdir: shutil.rmtree(tmpdir)
+            lock.release()
+        return code
+
+if __name__ == '__main__':
+    args = parser.parse_args()
+    sys.exit(Monitor(args).run())

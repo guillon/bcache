@@ -1,0 +1,168 @@
+
+[![Build Status](https://api.travis-ci.org/guillon/bcache.png?branch=master)](https://travis-ci.org/guillon/bcache/branches)
+[![Coverage Status](https://coveralls.io/repos/guillon/bcache/badge.svg?branch=master)](https://coveralls.io/r/guillon/bcache?branch=master)
+[![Issue Count](https://codeclimate.com/github/guillon/bcache/badges/issue_count.svg)](https://codeclimate.com/github/guillon/bcache)
+
+# Synopsis
+
+The bcache utility is used for executing some commands and storing the
+commands outputs to a cache. A further execution of the same command
+will be skipped and the commands outputs will be extracted from the cache.
+
+The bcache tool will store in cache the following commands outputs:
+- output files/dirs specified by the user,
+- stdout/stderr outputs,
+- the command exit code.
+
+Note that bcache stores to cache only when the command exits successfully
+with exit code 0.
+
+For instance in order to store a simple command output to cache, one as
+simply to prefix the command with bcache as in (the `-d` option is used
+to output cache management information, just for the example):
+
+    $ bcache -d -- echo DONE
+    DONE
+    DEBUG: bcache: ...: updating cache .../4e/870f5a75d41be4e621f3959acb11f4c4eb3ea4
+
+If re-executing the same command, the output is taken from cache:
+
+    $ bcache -d -- echo DONE
+    DEBUG: bcache: ...: reading from cache .../4e/870f5a75d41be4e621f3959acb11f4c4eb3ea4
+    DONE
+
+One can inspect the actual command description with:
+
+    $ bcache --dump -- echo DONE
+    cmds:
+    - [echo, DONE]
+    cwd: .
+    env: []
+    inputs: []
+    outputs: []
+    venv: []
+
+Or dump the cache entry id with:
+
+    $ bcache --dump-id -- echo DONE
+    4e870f5a75d41be4e621f3959acb11f4c4eb3ea4
+
+Note that it is the user responsibility to ensure that execution of a
+command is unambiguous or can be considered unambiguous when executed on the
+same machine and/or context.
+
+In particular it is important to note that the following should be enforced by
+the user:
+- actual execution directory does not change command outcomes. If so, the
+directory absolute path should be specified with `-w` option for instance.
+- actual command executable, system context and hidden dependencies do not
+change command outcome. If so, use the `-i` or `--id` option to specify additional
+files or unique identifiers as input.
+- volatile environment variables do not change command outcomes. If so
+specify these variables with `-e` option instead of `-v`.
+
+The bcache tool as can be seen in the output of the command description
+(`--dump`) uses an empty environment in order to maximize possibilities of
+cache hits. Hence the user has to provide explicitly the necessary environment
+through the `-e` (`--env`) option or specify volatile environment vars that
+has no influence on the command execution outcome with the `-v` (`--venv`)
+option.
+
+
+# Download
+
+Download the bcache tool from the releases page:
+https://github.com/guillon/bcache/releases
+
+Or download the last stable version of the script from there:
+https://raw.githubusercontent.com/guillon/bcache/master/bcache
+
+For instance:
+
+    $ wget -O ~/bin/bcache https://raw.githubusercontent.com/guillon/bcache/master/bcache
+    $ chmod +x ~/bin/bcache
+
+
+# Examples
+
+Section to be completed with more useful examples.
+
+Get the command line help with:
+
+    $ bcache --help
+    Usage: bcache [options] -- COMMAND...
+    
+    bcache utility, run a command or get outputs from cache.
+    
+    Options:
+      -h, --help            show this help message and exit
+      -c CACHE_DIR, --cache-dir=CACHE_DIR
+                            cache dir for command outputs (default: $HOME/.bcache)
+      -o OUTPUT, --output=OUTPUT
+                            output file/directory to be cached, may be multiple
+      -i INPUT, --input=INPUT
+                            optional file/directory input, may be multiple
+      -s SHELL, --shell=SHELL
+                            shell command line to execute, may be multiple
+      -e ENV, --env=ENV     env var to add as KEY=VALUE, may be multiple. Use '-'
+                            to reset
+      -v VENV, --venv=VENV  volatile env var to add as KEY, may be multiple. Use
+                            '-' to reset
+      -w CWD, --cwd=CWD     initial working dir for executed commands. Default:
+                            '.'
+      --id=ID               optional identifier for unique cache entry, may be
+                            multiple
+      --chain=CHAIN         optional identification file for reading/writing image
+                            ids
+      -f, --force           force re-execution without reading cache
+      -n, --no-store        do not store to cache
+      -y YAML, --yaml=YAML  input build yaml description
+      --dump                outputs yaml description to stdout and exit
+      --clean               clean cache entry for the command if any
+      --dump-id             outputs cache identity to stdout and exit
+    ...
+
+# Build and Install
+
+This tool requires python 2.6.x, 2.7.x or >= 3.x.
+
+The tool can be used directly without installation by executing
+directly bcache where downloaded.
+
+A makefile is provided anyway for completion and testing purpose.
+
+Build with:
+
+    $ make all # a no-op actually
+
+Run unit tests with:
+
+    $ make -j8 check
+
+Install with, for instance:
+
+    $ make install PREFIX=$HOME/local  # Default is PREFIX=/usr/local
+
+
+# References
+
+Refer to the project home page at:
+http://guillon.github.com/bcache
+
+Fill issues and enhancement request at:
+https://github.com/guillon/bcache/issues
+
+Refer to the current build and validation status at:
+https://travis-ci.org/guillon/bcache?branches
+
+Refer to the code coverage status at:
+https://coveralls.io/r/guillon/bcache?branch=master
+
+
+# License
+
+The tool is distributed under the GPLv2 license.
+
+Refer to the COPYING file: https://github.com/guillon/bcache/blob/master/COPYING
+
+Refer to the COPYRIGHT file: https://github.com/guillon/bcache/blob/master/COPYRIGHT
