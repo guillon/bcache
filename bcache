@@ -140,7 +140,7 @@ parser.add_option("--id",
                   help="optional identifier for unique cache entry, may be multiple",
                   action="append", default=[])
 parser.add_option("--chain",
-                  help="optional identification file for reading/writing image ids")
+                  help="optional identification file for reading/writing image ids, must be empty or missing to start the chain")
 parser.add_option("-f", "--force",
                   help="force re-execution without reading cache",
                   action="store_true")
@@ -389,11 +389,7 @@ class CommandsContext():
             key = pair[0]
             if len(pair) == 2: value = pair[1]
             else: value = ""
-            new_env = self.env[:]
-            for env in self.env:
-                old = env.split("=", 1)[0]
-                if old != key:
-                    new_env.append(env)
+            new_env = filter(lambda x: x.split("=", 1)[0] != key, self.env)
             new_env.append("%s=%s" % (key, value))
             self.env = sorted(new_env)
         return self
