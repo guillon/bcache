@@ -7,3 +7,13 @@ script:
   - make all
   - make check
   - make install PREFIX=install
+deploy:
+  provider: releases
+  api_key:
+    secure: BhprTEtBTwPqc8tGs8D0+PdK1zULsEtaNkOBdEb7b59tVine2POsMwLB2doVvGsl6LiThPfKtbF3nHQUTCdcXoyQ7ob+NVFkVmf33d9x2jwHekhXRxdW/aLim4OodAIAC1q7fslTjXO3H0Eif0fMJUl/ofyKQ0xXt5JOI7ZQJsB+218BcxDR/Vj8XmUsNEU7llCC/owKjpF+aNoKbjHICdPO8Sw5BBap1qOoMkTtOQU24yosbdw1pqwdJASXcDX+SvAYXSqwU7cC4ZV4hS3O21HoyGgLIyeH6f2L9g0T08nBmxhwZplNG6cVRiXuTvkP/46hDasXdRcxKzYLRbxhhE4Z2ECa/2qMWwaD8tWZqg6WSOXcJio5MpAJmPVVZ5n06w2/xlx/ceSC4ijIM0cA0yhJyJ/HgwB6ahWgZK+zyq8tPd4kSTzVkTn1bUkLQva52oZS1GnzakwD81H04E2hqySZodurZqRXoDzIMLg6OhqKnyL8VFk3miaqxNqCZzKHI7Treg9DMjb3QHn+2Us/I7wfwWTepsrC4WFIJUbkQK0ui1CvrISOgnuieA9oXcNmlkZrwov31J59cnQddErIzHXISHhO67WByCXzgTAvZgfL/vifliY4/NF1RAWXjzTifv3i/WPdcipUhw/zWN9kIC1nBCsvXKIudC1Jv+Btqgk=
+  file: install/bin/bcache
+  on:
+    repo: guillon/bcache
+    tags: true
+    python: '2.6'
+
