@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="UTF-8">
+    <title>bcache by guillon</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" type="text/css" href="stylesheets/normalize.css" media="screen">
+    <link href='https://fonts.googleapis.com/css?family=Open+Sans:400,700' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" type="text/css" href="stylesheets/stylesheet.css" media="screen">
+    <link rel="stylesheet" type="text/css" href="stylesheets/github-light.css" media="screen">
+  </head>
+  <body>
+    <section class="page-header">
+      <h1 class="project-name">bcache</h1>
+      <h2 class="project-tagline">Command outputs caching tool</h2>
+      <a href="https://github.com/guillon/bcache" class="btn">View on GitHub</a>
+      <a href="https://github.com/guillon/bcache/zipball/master" class="btn">Download .zip</a>
+      <a href="https://github.com/guillon/bcache/tarball/master" class="btn">Download .tar.gz</a>
+    </section>
+
+    <section class="main-content">
+      <p><a href="https://travis-ci.org/guillon/bcache/branches"><img src="https://api.travis-ci.org/guillon/bcache.png?branch=master" alt="Build Status"></a>
+<a href="https://coveralls.io/r/guillon/bcache?branch=master"><img src="https://coveralls.io/repos/guillon/bcache/badge.svg?branch=master" alt="Coverage Status"></a>
+<a href="https://codeclimate.com/github/guillon/bcache"><img src="https://codeclimate.com/github/guillon/bcache/badges/issue_count.svg" alt="Issue Count"></a></p>
+
+<h1>
+<a id="synopsis" class="anchor" href="#synopsis" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Synopsis</h1>
+
+<p>The bcache utility is used for executing some commands and storing the
+commands outputs to a cache. A further execution of the same command
+will be skipped and the commands outputs will be extracted from the cache.</p>
+
+<p>The bcache tool will store in cache the following commands outputs:</p>
+
+<ul>
+<li>output files/dirs specified by the user,</li>
+<li>stdout/stderr outputs,</li>
+<li>the command exit code.</li>
+</ul>
+
+<p>Note that bcache stores to cache only when the command exits successfully
+with exit code 0.</p>
+
+<p>For instance in order to store a simple command output to cache, one as
+simply to prefix the command with bcache as in (the <code>-d</code> option is used
+to output cache management information, just for the example):</p>
+
+<pre><code>$ bcache -d -- echo DONE
+DONE
+DEBUG: bcache: ...: updating cache .../4e/870f5a75d41be4e621f3959acb11f4c4eb3ea4
+</code></pre>
+
+<p>If re-executing the same command, the output is taken from cache:</p>
+
+<pre><code>$ bcache -d -- echo DONE
+DEBUG: bcache: ...: reading from cache .../4e/870f5a75d41be4e621f3959acb11f4c4eb3ea4
+DONE
+</code></pre>
+
+<p>One can inspect the actual command description with:</p>
+
+<pre><code>$ bcache --dump -- echo DONE
+cmds:
+- [echo, DONE]
+cwd: .
+env: []
+inputs: []
+outputs: []
+venv: []
+</code></pre>
+
+<p>Or dump the cache entry id with:</p>
+
+<pre><code>$ bcache --dump-id -- echo DONE
+4e870f5a75d41be4e621f3959acb11f4c4eb3ea4
+</code></pre>
+
+<p>Note that it is the user responsibility to ensure that execution of a
+command is unambiguous or can be considered unambiguous when executed on the
+same machine and/or context.</p>
+
+<p>In particular it is important to note that the following should be enforced by
+the user:</p>
+
+<ul>
+<li>actual execution directory does not change command outcomes. If so, the
+directory absolute path should be specified with <code>-w</code> option for instance.</li>
+<li>actual command executable, system context and hidden dependencies do not
+change command outcome. If so, use the <code>-i</code> or <code>--id</code> option to specify additional
+files or unique identifiers as input.</li>
+<li>volatile environment variables do not change command outcomes. If so
+specify these variables with <code>-e</code> option instead of <code>-v</code>.</li>
+</ul>
+
+<p>The bcache tool as can be seen in the output of the command description
+(<code>--dump</code>) uses an empty environment in order to maximize possibilities of
+cache hits. Hence the user has to provide explicitly the necessary environment
+through the <code>-e</code> (<code>--env</code>) option or specify volatile environment vars that
+has no influence on the command execution outcome with the <code>-v</code> (<code>--venv</code>)
+option.</p>
+
+<h1>
+<a id="download" class="anchor" href="#download" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Download</h1>
+
+<p>Download the bcache tool from the releases page:
+<a href="https://github.com/guillon/bcache/releases">https://github.com/guillon/bcache/releases</a></p>
+
+<p>Or download the last stable version of the script from there:
+<a href="https://raw.githubusercontent.com/guillon/bcache/master/bcache">https://raw.githubusercontent.com/guillon/bcache/master/bcache</a></p>
+
+<p>For instance:</p>
+
+<pre><code>$ wget -O ~/bin/bcache https://raw.githubusercontent.com/guillon/bcache/master/bcache
+$ chmod +x ~/bin/bcache
+</code></pre>
+
+<h1>
+<a id="examples" class="anchor" href="#examples" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Examples</h1>
+
+<p>Section to be completed with more useful examples.</p>
+
+<p>Get the command line help with:</p>
+
+<pre><code>$ bcache --help
+Usage: bcache [options] -- COMMAND...
+
+bcache utility, run a command or get outputs from cache.
+
+Options:
+  -h, --help            show this help message and exit
+  -c CACHE_DIR, --cache-dir=CACHE_DIR
+                        cache dir for command outputs (default: $HOME/.bcache)
+  -o OUTPUT, --output=OUTPUT
+                        output file/directory to be cached, may be multiple
+  -i INPUT, --input=INPUT
+                        optional file/directory input, may be multiple
+  -s SHELL, --shell=SHELL
+                        shell command line to execute, may be multiple
+  -e ENV, --env=ENV     env var to add as KEY=VALUE, may be multiple. Use '-'
+                        to reset
+  -v VENV, --venv=VENV  volatile env var to add as KEY, may be multiple. Use
+                        '-' to reset
+  -w CWD, --cwd=CWD     initial working dir for executed commands. Default:
+                        '.'
+  --id=ID               optional identifier for unique cache entry, may be
+                        multiple
+  --chain=CHAIN         optional identification file for reading/writing image
+                        ids
+  -f, --force           force re-execution without reading cache
+  -n, --no-store        do not store to cache
+  -y YAML, --yaml=YAML  input build yaml description
+  --dump                outputs yaml description to stdout and exit
+  --clean               clean cache entry for the command if any
+  --dump-id             outputs cache identity to stdout and exit
+...
+</code></pre>
+
+<h1>
+<a id="build-and-install" class="anchor" href="#build-and-install" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>Build and Install</h1>
+
+<p>This tool requires python 2.6.x, 2.7.x or &gt;= 3.x.</p>
+
+<p>The tool can be used directly without installation by executing
+directly bcache where downloaded.</p>
+
+<p>A makefile is provided anyway for completion and testing purpose.</p>
+
+<p>Build with:</p>
+
+<pre><code>$ make all # a no-op actually
+</code></pre>
+
+<p>Run unit tests with:</p>
+
+<pre><code>$ make -j8 check
+</code></pre>
+
+<p>Install with, for instance:</p>
+
+<pre><code>$ make install PREFIX=$HOME/local  # Default is PREFIX=/usr/local
+</code></pre>
+
+<h1>
+<a id="references" class="anchor" href="#references" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>References</h1>
+
+<p>Refer to the project home page at:
+<a href="http://guillon.github.com/bcache">http://guillon.github.com/bcache</a></p>
+
+<p>Fill issues and enhancement request at:
+<a href="https://github.com/guillon/bcache/issues">https://github.com/guillon/bcache/issues</a></p>
+
+<p>Refer to the current build and validation status at:
+<a href="https://travis-ci.org/guillon/bcache?branches">https://travis-ci.org/guillon/bcache?branches</a></p>
+
+<p>Refer to the code coverage status at:
+<a href="https://coveralls.io/r/guillon/bcache?branch=master">https://coveralls.io/r/guillon/bcache?branch=master</a></p>
+
+<h1>
+<a id="license" class="anchor" href="#license" aria-hidden="true"><span aria-hidden="true" class="octicon octicon-link"></span></a>License</h1>
+
+<p>The tool is distributed under the GPLv2 license.</p>
+
+<p>Refer to the COPYING file: <a href="https://github.com/guillon/bcache/blob/master/COPYING">https://github.com/guillon/bcache/blob/master/COPYING</a></p>
+
+<p>Refer to the COPYRIGHT file: <a href="https://github.com/guillon/bcache/blob/master/COPYRIGHT">https://github.com/guillon/bcache/blob/master/COPYRIGHT</a></p>
+
+      <footer class="site-footer">
+        <span class="site-footer-owner"><a href="https://github.com/guillon/bcache">bcache</a> is maintained by <a href="https://github.com/guillon">guillon</a>.</span>
+
+        <span class="site-footer-credits">This page was generated by <a href="https://pages.github.com">GitHub Pages</a> using the <a href="https://github.com/jasonlong/cayman-theme">Cayman theme</a> by <a href="https://twitter.com/jasonlong">Jason Long</a>.</span>
+      </footer>
+
+    </section>
+
+  
+  </body>
+</html>
