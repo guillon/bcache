@@ -532,6 +532,7 @@ class CommandsContext():
             self.logger.debug(" env: %s" % (" ".join(self.env)))
             self.logger.debug(" venv: %s" % (" ".join(self.venv)))
             self.logger.debug(" ids: %s" % (" ".join(self.ids)))
+            self.logger.debug(" inputs: %s" % (" ".join(self.inputs)))
             self.logger.debug(" outputs: %s" % (" ".join(self.outputs)))
 
         for command in self.cmds:
@@ -662,7 +663,8 @@ class Monitor():
                             self.args.output).set_envs(
                                 self.args.env).set_venvs(
                                     self.args.venv).set_cwd(
-                                        self.args.cwd).add_commands(self.args.shell)
+                                        self.args.cwd).add_commands(
+                                            self.args.shell)
             else:
                 ctx.add_ids(
                     self.args.id).add_inputs(
