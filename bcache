@@ -356,7 +356,6 @@ class CommandsContext():
         return str_repr
 
     def yaml_repr(self):
-        import yaml
         actual = {}
         actual['cwd'] = self.cwd
         actual['env'] = self.env
@@ -370,7 +369,6 @@ class CommandsContext():
         return yaml_repr
 
     def yaml_read(self, input):
-        import yaml
         self.to_str(input)
         assert(isinstance(input, str))
         yaml_repr = yaml.load(input)
@@ -398,7 +396,12 @@ class CommandsContext():
             raise
         return self
 
-    def dump(self, fh=None):
+    def dump_repr(self, fh=None):
+        if fh is None: fh = sys.stdout
+        fh.write(self.string_repr())
+        fh.flush()
+
+    def dump_yaml(self, fh=None):
         if fh is None: fh = sys.stdout
         fh.write(self.yaml_repr())
         fh.flush()
@@ -571,7 +574,7 @@ class CommandsContext():
             stderr.close()
         return 0
 
-    def execute(self, logfile=None, codfile=None, ymlfile=None):
+    def execute(self, logfile=None, codfile=None, serfile=None):
 
         def setfl(fd, msk):
             if not msk: return
@@ -646,9 +649,9 @@ class CommandsContext():
                 if self.logger:
                     self.logger.debug(" command returned error code: %d" % code)
                 break
-        if ymlfile:
-            self.dump(ymlfile)
-            ymlfile.flush()
+        if serfile:
+            self.dump_repr(serfile)
+            serfile.flush()
         if codfile:
             codfile.write("%d" % code)
             codfile.flush()
@@ -671,13 +674,13 @@ class CommandsContext():
         code = ctx.execute()
         assert(code == 0)
         print("Yaml dump:")
-        ctx.dump()
+        ctx.dump_yaml()
         print("String dump:")
         print(ctx.string_repr())
         print("Hash values:")
         print(ctx.get_hash_id())
         with open("dump.yml", "w") as fh:
-            ctx.dump(fh)
+            ctx.dump_yaml(fh)
         ctx2 = CommandsContext(logger=logging.getLogger())
         ctx2.yaml_read(ctx.yaml_repr())
         print(ctx2.get_hash_id())
@@ -752,7 +755,7 @@ class Monitor():
 
         # If dump/dump_id, dumps description/id and exit
         if args.dump:
-            ctx.dump()
+            ctx.dump_yaml()
             return 0
         elif args.dump_id:
             ctx.dump_id()
@@ -800,7 +803,7 @@ class Monitor():
             global_lock.release()
 
         # Take lock and execute command
-        bcache_yml = os.path.join(cache_dir_id, "bcache.yml")
+        bcache_ser = os.path.join(cache_dir_id, "bcache.ser")
         bcache_log = os.path.join(cache_dir_id, "bcache.log")
         bcache_cod = os.path.join(cache_dir_id, "bcache.cod")
         cache_output_dir = os.path.join(cache_dir_id, "output")
@@ -811,7 +814,7 @@ class Monitor():
             if args.clean:
                 logger.debug("cleaning cache entry %s..." % cache_dir_id)
                 clean_force(cache_output_dir)
-                clean_force(bcache_yml)
+                clean_force(bcache_ser)
                 clean_force(bcache_log)
                 clean_force(bcache_cod)
                 return 0
@@ -837,9 +840,9 @@ class Monitor():
             else:
                 tmpdir = tempfile.mkdtemp(dir=cache_dir_id)
                 with open(os.path.join(tmpdir, "bcache.log"), "wb") as logfile:
-                    with open(os.path.join(tmpdir, "bcache.yml"), "wb") as ymlfile:
+                    with open(os.path.join(tmpdir, "bcache.ser"), "wb") as serfile:
                         with open(os.path.join(tmpdir, "bcache.cod"), "wb") as codfile:
-                            code = ctx.execute(logfile=logfile, codfile=codfile, ymlfile=ymlfile)
+                            code = ctx.execute(logfile=logfile, codfile=codfile, serfile=serfile)
                 if code == 0 and not args.no_store:
                     logger.debug("updating cache %s..." % cache_dir_id)
                     if len(outputs) > 0:
@@ -853,7 +856,7 @@ class Monitor():
                                   file=sys.stderr)
                             return ExitCodes.CANCELED
                     if clone_list([(os.path.join(tmpdir, "bcache.log"), bcache_log),
-                                   (os.path.join(tmpdir, "bcache.yml"), bcache_yml),
+                                   (os.path.join(tmpdir, "bcache.ser"), bcache_ser),
                                    (os.path.join(tmpdir, "bcache.cod"), bcache_cod)]) != 0:
                         print("bcache: error: failed to move bcache files to %s" %
                               (cache_dir_id),
