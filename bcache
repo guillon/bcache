@@ -44,7 +44,7 @@ import os, subprocess, select, fcntl, errno, optparse, time, hashlib, logging, t
 
 # Update VERSION for major.minor.patch releases.
 # The sha1sum will be appended to the version string.
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 class ExitCodes:
     """ Exit codes used to feedback the parent process.
