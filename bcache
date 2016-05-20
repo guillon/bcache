@@ -277,13 +277,18 @@ class Lock:
 class CommandsContext():
     """ Maintains environment information for the command and """
     """ executes commands when requested. """
+    _default_shell = [ "/usr/bin/env", "bash" ]
+    _default_encoding = "utf-8"
+    _default_cwd = "."
+    _default_venv = [ "http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy",
+                      "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY" ]
     def __init__(self, logger=None):
         self.logger = logger
-        self.shell = [ "/usr/bin/env", "bash" ]
-        self.encoding = "utf-8"
+        self.shell = self._default_shell
+        self.encoding = self._default_encoding
         self.env = []
-        self.venv = []
-        self.cwd = "."
+        self.venv = self._default_venv
+        self.cwd = self._default_cwd
         self.cmds = []
         self.ids = []
         self.inputs = []
