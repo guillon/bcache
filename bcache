@@ -40,7 +40,8 @@ def interrupt_handler(signum, frame):
     sys.exit(128 + signum)
 signal.signal(signal.SIGINT, interrupt_handler)
 
-import os, subprocess, select, fcntl, errno, optparse, time, hashlib, logging, tempfile, yaml, stat, shutil
+import os, subprocess, select, fcntl, errno, optparse, time, hashlib, logging, tempfile, stat, shutil
+
 
 # Update VERSION for major.minor.patch releases.
 # The sha1sum will be appended to the version string.
@@ -305,8 +306,40 @@ class CommandsContext():
             return input.encode(self.encoding)
         else:
             return input
+
+    def repr_value(self, value):
+        assert(isinstance(value, str) or isinstance(value, unicode) or
+               isinstance(value, dict) or isinstance(value, list))
+        if isinstance(value, str) or isinstance(value, unicode):
+            return self.repr_str_bytes(self.to_str(value))
+        elif isinstance(value, list):
+            return self.repr_list(value)
+        elif isinstance(value, dict):
+            return self.repr_map(value)
+
+    def repr_str_bytes(self, str_bytes):
+        assert(isinstance(str_bytes, str))
+        return "B%d:%s" % (len(str_bytes), str_bytes)
+
+    def repr_list(self, val_list):
+        assert(isinstance(val_list, list))
+        list_str=""
+        for elt in val_list:
+            list_str += self.repr_value(elt)
+        return "L%d:%s" % (len(list_str), list_str)
+
+    def repr_map(self, val_map):
+        assert(isinstance(val_map, dict))
+        map_str=""
+        for field in sorted(val_map):
+            map_str += self.repr_field_value(field, val_map[field])
+        return "M%d:%s" % (len(map_str), map_str)
+
+    def repr_field_value(self, field, value):
+        fv_str = self.repr_value(field) + ":" + self.repr_value(value)
+        return "F%d:%s" % (len(fv_str), fv_str)
         
-    def strdump(self):
+    def fields_repr(self):
         actual = {}
         actual['cmds'] = self.cmds
         actual['env'] = self.env
@@ -315,11 +348,29 @@ class CommandsContext():
         actual['ids'] = self.ids
         actual['inputs'] = self.inputs
         actual['outputs'] = self.outputs
-        yaml_repr = yaml.safe_dump(actual)
+        return actual
+
+    def string_repr(self):
+        str_repr = self.repr_map(self.fields_repr())
+        assert(isinstance(str_repr, str))
+        return str_repr
+
+    def yaml_repr(self):
+        import yaml
+        actual = {}
+        actual['cwd'] = self.cwd
+        actual['env'] = self.env
+        actual['venv'] = self.venv
+        actual['cmds'] = self.cmds
+        actual['ids'] = self.ids
+        actual['inputs'] = self.inputs
+        actual['outputs'] = self.outputs
+        yaml_repr = yaml.safe_dump(self.fields_repr())
         assert(isinstance(yaml_repr, str))
         return yaml_repr
 
-    def strload(self, input):
+    def yaml_read(self, input):
+        import yaml
         self.to_str(input)
         assert(isinstance(input, str))
         yaml_repr = yaml.load(input)
@@ -334,7 +385,7 @@ class CommandsContext():
 
     def load(self, fh=None):
         if fh is None: fh = sys.stdin
-        self.strload(fh.read())
+        self.yaml_read(fh.read())
         return self
 
     def loadfn(self, fname):
@@ -349,7 +400,7 @@ class CommandsContext():
 
     def dump(self, fh=None):
         if fh is None: fh = sys.stdout
-        fh.write(self.strdump())
+        fh.write(self.yaml_repr())
         fh.flush()
 
     def dump_id(self, fh=None):
@@ -358,7 +409,7 @@ class CommandsContext():
         fh.flush()
 
     def get_hash_id(self):
-        sha1 = hashlib.sha1(self.strdump()).hexdigest()
+        sha1 = hashlib.sha1(self.string_repr()).hexdigest()
         return sha1
 
     def get_hash(self, fname):
@@ -611,24 +662,29 @@ class CommandsContext():
         assert(ctx is not None)
         ctx.set_venv("USER")
         ctx.set_venv("LOGIN")
-        ctx.set_env("DUMMY", "=\"\' ;:.\xc3\xa9".decode("utf-8"))
+        ctx.set_env("DUMMY=\"\' ;:.\xc3\xa9".decode("utf-8"))
         ctx.add_shell_command("env")
         ctx.add_command(["env"])
         ctx.add_shell_command("ls")
+        print("Execution:")
+        sys.stdout.flush()
         code = ctx.execute()
         assert(code == 0)
+        print("Yaml dump:")
         ctx.dump()
+        print("String dump:")
+        print(ctx.string_repr())
+        print("Hash values:")
         print(ctx.get_hash_id())
         with open("dump.yml", "w") as fh:
             ctx.dump(fh)
         ctx2 = CommandsContext(logger=logging.getLogger())
-        ctx2.strload(ctx.strdump())
+        ctx2.yaml_read(ctx.yaml_repr())
         print(ctx2.get_hash_id())
         ctx2 = CommandsContext(logger=logging.getLogger())
         with open("dump.yml") as fh:
             ctx2.load(fh)
         print(ctx2.get_hash_id())
-
 
 class Monitor():
     """ Actual class containing the run method for the tool. """
@@ -649,12 +705,21 @@ class Monitor():
             try:
                 log_stream = open(args.log_file, "a", 1)
             except IOError as e:
-                print("bcache: error:: can't open log file: %s" % str(e),
+                print("bcache: error: can't open log file: %s" % str(e),
                       file=sys.stderr)
                 return ExitCodes.USER
         logging.basicConfig(stream = log_stream, level = log_lvl,
                             format = log_fmt)
         logger = logging.getLogger("bcache")
+
+        if args.dump or args.yaml is not None:
+            try:
+                import yaml
+            except ImportError:
+                print("bcache: error: install python-yaml package in order to use "
+                      "--yaml or --dump Yaml option input/output options",
+                      file=sys.stderr)
+                return ExitCodes.USER
 
         ctx = CommandsContext(logger=logger)
         try:
@@ -710,7 +775,7 @@ class Monitor():
             logger.debug("creating cache root dir '%s'" % cache_root)
             mkdir_p(cache_root, mode=stat.S_IRWXU)
         except OSError as e:
-            print("bcache: error:: can't create cache root dir '%s': %s" %
+            print("bcache: error: can't create cache root dir '%s': %s" %
                   (cache_root, e.strerror),
                   file=sys.stderr)
             return ExitCodes.USER
@@ -725,7 +790,7 @@ class Monitor():
                 logger.debug("creating cache dir '%s'" % cache_dir_id)
                 mkdir_p(cache_dir_id, mode=stat.S_IRWXU)
             except OSError as e:
-                print("bcache: error:: can't create cache dir '%s': %s" %
+                print("bcache: error: can't create cache dir '%s': %s" %
                       (cache_dir_id, e.strerror),
                       file=sys.stderr)
                 return ExitCodes.USER
